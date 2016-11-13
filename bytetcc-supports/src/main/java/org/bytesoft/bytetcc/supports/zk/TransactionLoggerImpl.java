@@ -13,47 +13,38 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.bytetcc.logger;
+package org.bytesoft.bytetcc.supports.zk;
 
-import java.util.List;
-
-import org.apache.log4j.Logger;
 import org.bytesoft.compensable.archive.CompensableArchive;
 import org.bytesoft.compensable.archive.TransactionArchive;
-import org.bytesoft.compensable.logger.CompensableLogger;
+import org.bytesoft.compensable.logging.CompensableLogger;
 import org.bytesoft.transaction.archive.XAResourceArchive;
+import org.bytesoft.transaction.recovery.TransactionRecoveryCallback;
 
-public class SampleTransactionLogger implements CompensableLogger {
-	static final Logger logger = Logger.getLogger(SampleTransactionLogger.class.getSimpleName());
+public class TransactionLoggerImpl implements CompensableLogger {
 
 	public void createTransaction(TransactionArchive archive) {
-		// TODO Auto-generated method stub
-
 	}
 
 	public void updateTransaction(TransactionArchive archive) {
-		// TODO Auto-generated method stub
-
 	}
 
 	public void deleteTransaction(TransactionArchive archive) {
-		// TODO Auto-generated method stub
-
 	}
 
-	public List<TransactionArchive> getTransactionArchiveList() {
-		// TODO Auto-generated method stub
-		return null;
+	public void createCoordinator(XAResourceArchive archive) {
 	}
 
 	public void updateCoordinator(XAResourceArchive archive) {
-		// TODO Auto-generated method stub
+	}
 
+	public void createCompensable(CompensableArchive archive) {
 	}
 
 	public void updateCompensable(CompensableArchive archive) {
-		// TODO Auto-generated method stub
+	}
 
+	public void recover(TransactionRecoveryCallback callback) {
 	}
 
 }

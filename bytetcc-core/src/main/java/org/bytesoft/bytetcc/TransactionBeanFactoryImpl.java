@@ -16,15 +16,18 @@
 package org.bytesoft.bytetcc;
 
 import org.bytesoft.bytejta.supports.wire.RemoteCoordinator;
-import org.bytesoft.bytetcc.logger.EmptyCompensableLogger;
+import org.bytesoft.bytetcc.supports.resource.LocalResourceCleaner;
 import org.bytesoft.compensable.CompensableBeanFactory;
+import org.bytesoft.compensable.CompensableContext;
 import org.bytesoft.compensable.CompensableManager;
 import org.bytesoft.compensable.ContainerContext;
-import org.bytesoft.compensable.logger.CompensableLogger;
+import org.bytesoft.compensable.logging.CompensableLogger;
 import org.bytesoft.transaction.TransactionManager;
 import org.bytesoft.transaction.TransactionRecovery;
 import org.bytesoft.transaction.TransactionRepository;
+import org.bytesoft.transaction.logging.ArchiveDeserializer;
 import org.bytesoft.transaction.supports.rpc.TransactionInterceptor;
+import org.bytesoft.transaction.supports.serialize.XAResourceDeserializer;
 import org.bytesoft.transaction.xa.XidFactory;
 
 public final class TransactionBeanFactoryImpl implements CompensableBeanFactory {
@@ -33,14 +36,19 @@ public final class TransactionBeanFactoryImpl implements CompensableBeanFactory 
 	private CompensableManager compensableManager;
 	private XidFactory transactionXidFactory;
 	private XidFactory compensableXidFactory;
-	private CompensableLogger compensableLogger = new EmptyCompensableLogger();
+	private CompensableLogger compensableLogger;
 	private TransactionRepository transactionRepository;
 	private TransactionRepository compensableRepository;
 	private TransactionInterceptor transactionInterceptor;
 	private TransactionRecovery transactionRecovery;
+	private TransactionRecovery compensableRecovery;
 	private RemoteCoordinator transactionCoordinator;
 	private RemoteCoordinator compensableCoordinator;
 	private ContainerContext containerContext;
+	private ArchiveDeserializer archiveDeserializer;
+	private XAResourceDeserializer resourceDeserializer;
+	private LocalResourceCleaner localResourceCleaner;
+	private CompensableContext compensableContext;
 
 	public TransactionManager getTransactionManager() {
 		return transactionManager;
@@ -106,6 +114,14 @@ public final class TransactionBeanFactoryImpl implements CompensableBeanFactory 
 		this.transactionInterceptor = transactionInterceptor;
 	}
 
+	public TransactionRecovery getCompensableRecovery() {
+		return compensableRecovery;
+	}
+
+	public void setCompensableRecovery(TransactionRecovery compensableRecovery) {
+		this.compensableRecovery = compensableRecovery;
+	}
+
 	public TransactionRecovery getTransactionRecovery() {
 		return transactionRecovery;
 	}
@@ -136,6 +152,38 @@ public final class TransactionBeanFactoryImpl implements CompensableBeanFactory 
 
 	public void setContainerContext(ContainerContext containerContext) {
 		this.containerContext = containerContext;
+	}
+
+	public ArchiveDeserializer getArchiveDeserializer() {
+		return archiveDeserializer;
+	}
+
+	public void setArchiveDeserializer(ArchiveDeserializer archiveDeserializer) {
+		this.archiveDeserializer = archiveDeserializer;
+	}
+
+	public XAResourceDeserializer getResourceDeserializer() {
+		return resourceDeserializer;
+	}
+
+	public void setResourceDeserializer(XAResourceDeserializer resourceDeserializer) {
+		this.resourceDeserializer = resourceDeserializer;
+	}
+
+	public LocalResourceCleaner getLocalResourceCleaner() {
+		return localResourceCleaner;
+	}
+
+	public void setLocalResourceCleaner(LocalResourceCleaner localResourceCleaner) {
+		this.localResourceCleaner = localResourceCleaner;
+	}
+
+	public CompensableContext getCompensableContext() {
+		return compensableContext;
+	}
+
+	public void setCompensableContext(CompensableContext compensableContext) {
+		this.compensableContext = compensableContext;
 	}
 
 }

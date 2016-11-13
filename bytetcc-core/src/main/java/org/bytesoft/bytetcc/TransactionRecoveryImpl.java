@@ -15,268 +15,334 @@
  */
 package org.bytesoft.bytetcc;
 
-import org.apache.log4j.Logger;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import javax.transaction.Status;
+import javax.transaction.SystemException;
+import javax.transaction.xa.XAException;
+import javax.transaction.xa.XAResource;
+import javax.transaction.xa.Xid;
+
+import org.apache.commons.lang3.StringUtils;
+import org.bytesoft.bytejta.supports.jdbc.RecoveredResource;
+import org.bytesoft.common.utils.ByteUtils;
+import org.bytesoft.common.utils.CommonUtils;
 import org.bytesoft.compensable.CompensableBeanFactory;
+import org.bytesoft.compensable.CompensableManager;
+import org.bytesoft.compensable.archive.CompensableArchive;
 import org.bytesoft.compensable.aware.CompensableBeanFactoryAware;
+import org.bytesoft.compensable.logging.CompensableLogger;
+import org.bytesoft.transaction.CommitRequiredException;
+import org.bytesoft.transaction.RollbackRequiredException;
+import org.bytesoft.transaction.Transaction;
+import org.bytesoft.transaction.TransactionContext;
 import org.bytesoft.transaction.TransactionRecovery;
+import org.bytesoft.transaction.TransactionRepository;
+import org.bytesoft.transaction.archive.TransactionArchive;
+import org.bytesoft.transaction.archive.XAResourceArchive;
+import org.bytesoft.transaction.recovery.TransactionRecoveryCallback;
+import org.bytesoft.transaction.recovery.TransactionRecoveryListener;
+import org.bytesoft.transaction.supports.serialize.XAResourceDeserializer;
+import org.bytesoft.transaction.xa.TransactionXid;
+import org.bytesoft.transaction.xa.XidFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-public class TransactionRecoveryImpl implements TransactionRecovery, CompensableBeanFactoryAware {
-	static final Logger logger = Logger.getLogger(TransactionRecoveryImpl.class.getSimpleName());
+public class TransactionRecoveryImpl implements TransactionRecovery, TransactionRecoveryListener, CompensableBeanFactoryAware {
+	static final Logger logger = LoggerFactory.getLogger(TransactionRecoveryImpl.class);
 
-	// private TransactionStatistic transactionStatistic;
 	private CompensableBeanFactory beanFactory;
 
-	public void timingRecover() {
-		// TODO Auto-generated method stub
+	private final Map<TransactionXid, Transaction> recovered = new HashMap<TransactionXid, Transaction>();
 
+	public void onRecovery(Transaction transaction) {
+		TransactionContext transactionContext = transaction.getTransactionContext();
+		TransactionXid xid = transactionContext.getXid();
+
+		XidFactory xidFactory = this.beanFactory.getCompensableXidFactory();
+		TransactionXid globalXid = xidFactory.createGlobalXid(xid.getGlobalTransactionId());
+
+		this.recovered.put(globalXid, transaction);
 	}
 
 	public void startRecovery() {
-		// TODO Auto-generated method stub
+		this.fireTransactionStartRecovery();
+		this.fireCompensableStartRecovery();
+	}
+
+	private void fireTransactionStartRecovery() {
+		TransactionRecovery transactionRecovery = this.beanFactory.getTransactionRecovery();
+		transactionRecovery.startRecovery();
+	}
+
+	private void fireCompensableStartRecovery() {
+		final TransactionRepository transactionRepository = this.beanFactory.getCompensableRepository();
+		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
+
+		compensableLogger.recover(new TransactionRecoveryCallback() {
+			public void recover(TransactionArchive archive) {
+				this.recover((org.bytesoft.compensable.archive.TransactionArchive) archive);
+			}
+
+			public void recover(org.bytesoft.compensable.archive.TransactionArchive archive) {
+				XidFactory transactionXidFactory = beanFactory.getTransactionXidFactory();
+
+				CompensableTransactionImpl transaction = reconstructTransaction(archive);
+				TransactionContext transactionContext = transaction.getTransactionContext();
+
+				TransactionXid compensableXid = transactionContext.getXid();
+				if (transactionContext.isCompensable()) {
+					switch (transaction.getTransactionStatus()) {
+					case Status.STATUS_ACTIVE:
+					case Status.STATUS_MARKED_ROLLBACK:
+					case Status.STATUS_PREPARING:
+					case Status.STATUS_UNKNOWN:
+						recoverStatusIfNecessary(transaction);
+						break;
+					default: // ignore
+					}
+				} else {
+					TransactionXid transactionXid = transactionXidFactory
+							.createGlobalXid(compensableXid.getGlobalTransactionId());
+					Transaction tx = recovered.get(transactionXid);
+					if (tx != null) {
+						tx.setTransactionalExtra(transaction);
+						transaction.setTransactionalExtra(tx);
+					}
+				} // end-if (transactionContext.isCompensable())
+
+				transactionRepository.putTransaction(compensableXid, transaction);
+				transactionRepository.putErrorTransaction(compensableXid, transaction);
+			}
+		});
+	}
+
+	public CompensableTransactionImpl reconstructTransaction(TransactionArchive transactionArchive) {
+		XidFactory xidFactory = this.beanFactory.getCompensableXidFactory();
+
+		org.bytesoft.compensable.archive.TransactionArchive archive = (org.bytesoft.compensable.archive.TransactionArchive) transactionArchive;
+
+		TransactionContext transactionContext = new TransactionContext();
+		transactionContext.setCompensable(true);
+		transactionContext.setCoordinator(archive.isCoordinator());
+		// transactionContext.setCompensating(compensating); // TODO
+		transactionContext.setRecoveried(true);
+		transactionContext.setXid(xidFactory.createGlobalXid(archive.getXid().getGlobalTransactionId()));
+
+		CompensableTransactionImpl transaction = new CompensableTransactionImpl(transactionContext);
+		transaction.setBeanFactory(this.beanFactory);
+		transaction.setTransactionVote(archive.getVote());
+		transaction.setTransactionStatus(archive.getCompensableStatus());
+		transaction.setVariables(archive.getVariables());
+
+		List<XAResourceArchive> participantList = archive.getRemoteResources();
+		for (int i = 0; i < participantList.size(); i++) {
+			XAResourceArchive participantArchive = participantList.get(i);
+			transaction.getParticipantArchiveList().add(participantArchive);
+		}
+
+		List<CompensableArchive> compensableList = archive.getCompensableResourceList();
+		for (int i = 0; i < compensableList.size(); i++) {
+			CompensableArchive compensableArchive = compensableList.get(i);
+			transaction.getCompensableArchiveList().add(compensableArchive);
+		}
+
+		return transaction;
+	}
+
+	private void recoverStatusIfNecessary(Transaction transaction) {
+		CompensableTransactionImpl compensable = (CompensableTransactionImpl) transaction;
+		List<CompensableArchive> archiveList = compensable.getCompensableArchiveList();
+
+		XAResourceDeserializer resourceDeserializer = this.beanFactory.getResourceDeserializer();
+		CompensableLogger compensableLogger = this.beanFactory.getCompensableLogger();
+
+		Map<TransactionBranchKey, Boolean> triedMap = new HashMap<TransactionBranchKey, Boolean>();
+		for (int i = 0; i < archiveList.size(); i++) {
+			CompensableArchive archive = archiveList.get(i);
+
+			if (archive.isTried()) {
+				switch (transaction.getTransactionStatus()) {
+				case Status.STATUS_ACTIVE:
+				case Status.STATUS_MARKED_ROLLBACK:
+				case Status.STATUS_PREPARING:
+				case Status.STATUS_ROLLING_BACK:
+				case Status.STATUS_UNKNOWN:
+					transaction.setTransactionStatus(Status.STATUS_PREPARED);
+					transaction.getTransactionContext().setCompensating(true);
+					compensableLogger.updateTransaction(compensable.getTransactionArchive());
+					break;
+				case Status.STATUS_PREPARED:
+				case Status.STATUS_COMMITTING:
+				case Status.STATUS_COMMITTED:
+				case Status.STATUS_ROLLEDBACK:
+				default:
+					// ignore
+				}
+			} else {
+				Xid transactionXid = archive.getTransactionXid();
+				String resourceKey = archive.getTransactionResourceKey();
+
+				TransactionBranchKey recordKey = new TransactionBranchKey();
+				recordKey.xid = transactionXid;
+				recordKey.resource = resourceKey;
+
+				if (StringUtils.isBlank(resourceKey)) {
+					logger.warn(
+							"There is no valid resource participated in the trying branch transaction, the status of the branch transaction is unknown!");
+				} else if (triedMap.containsKey(recordKey)) {
+					Boolean tried = triedMap.get(recordKey);
+					if (Boolean.TRUE.equals(tried)) {
+						transaction.setTransactionStatus(Status.STATUS_COMMITTING); // TODO
+					} else {
+						transaction.setTransactionStatus(Status.STATUS_MARKED_ROLLBACK);
+					}
+					transaction.getTransactionContext().setCompensating(true);
+					compensableLogger.updateTransaction(compensable.getTransactionArchive());
+				} else {
+					XAResource xares = resourceDeserializer.deserialize(resourceKey);
+					if (RecoveredResource.class.isInstance(xares)) {
+						RecoveredResource resource = (RecoveredResource) xares;
+						try {
+							resource.recoverable(archive.getTransactionXid());
+							archive.setTried(true);
+							triedMap.put(recordKey, Boolean.TRUE);
+
+							transaction.setTransactionStatus(Status.STATUS_COMMITTING); // TODO
+							transaction.getTransactionContext().setCompensating(true);
+							compensableLogger.updateTransaction(compensable.getTransactionArchive());
+						} catch (XAException xaex) {
+							switch (xaex.errorCode) {
+							case XAException.XAER_NOTA:
+								triedMap.put(recordKey, Boolean.FALSE);
+
+								transaction.setTransactionStatus(Status.STATUS_MARKED_ROLLBACK);
+								transaction.getTransactionContext().setCompensating(true);
+								compensableLogger.updateTransaction(compensable.getTransactionArchive());
+								break;
+							case XAException.XAER_RMERR:
+								logger.warn(
+										"The database table 'bytejta' cannot found, the status of the trying branch transaction is unknown!");
+								break;
+							case XAException.XAER_RMFAIL:
+								logger.error("Error occurred while recovering the branch transaction service: {}",
+										ByteUtils.byteArrayToString(transactionXid.getGlobalTransactionId()), xaex);
+								break;
+							default:
+								logger.error("Illegal state, the status of the trying branch transaction is unknown!");
+							}
+						}
+					} else {
+						logger.error("Illegal resources, the status of the trying branch transaction is unknown!");
+					}
+				}
+			} // end-else-if (archive.isTried())
+		} // end-for
+	}
+
+	public void timingRecover() {
+		TransactionRepository transactionRepository = beanFactory.getCompensableRepository();
+		List<Transaction> transactions = transactionRepository.getErrorTransactionList();
+		int total = transactions == null ? 0 : transactions.size();
+		int value = 0;
+		for (int i = 0; transactions != null && i < transactions.size(); i++) {
+			Transaction transaction = transactions.get(i);
+			TransactionContext transactionContext = transaction.getTransactionContext();
+			TransactionXid xid = transactionContext.getXid();
+			try {
+				this.recoverTransaction(transaction);
+			} catch (CommitRequiredException ex) {
+				logger.debug("{}| recover: branch={}, message= commit-required",
+						ByteUtils.byteArrayToString(xid.getGlobalTransactionId()),
+						ByteUtils.byteArrayToString(xid.getBranchQualifier()));
+				continue;
+			} catch (RollbackRequiredException ex) {
+				logger.debug("{}| recover: branch={}, message= rollback-required",
+						ByteUtils.byteArrayToString(xid.getGlobalTransactionId()),
+						ByteUtils.byteArrayToString(xid.getBranchQualifier()));
+				continue;
+			} catch (SystemException ex) {
+				logger.debug("{}| recover: branch={}, message= {}", ByteUtils.byteArrayToString(xid.getGlobalTransactionId()),
+						ByteUtils.byteArrayToString(xid.getBranchQualifier()), ex.getMessage());
+				continue;
+			} catch (RuntimeException ex) {
+				logger.debug("{}| recover: branch={}, message= {}", ByteUtils.byteArrayToString(xid.getGlobalTransactionId()),
+						ByteUtils.byteArrayToString(xid.getBranchQualifier()), ex.getMessage());
+				continue;
+			}
+		}
+		logger.debug("transaction-recovery: total= {}, success= {}", total, value);
+	}
+
+	public synchronized void recoverTransaction(Transaction transaction)
+			throws CommitRequiredException, RollbackRequiredException, SystemException {
+		CompensableManager compensableManager = this.beanFactory.getCompensableManager();
+		TransactionContext transactionContext = transaction.getTransactionContext();
+
+		if (transactionContext.isCoordinator()) {
+			try {
+				compensableManager.associateThread(transaction);
+				this.recoverCoordinator(transaction);
+			} finally {
+				compensableManager.desociateThread();
+			}
+		} // end-if (coordinator)
 
 	}
 
-	// public CompensableTransaction reconstructTransaction(TransactionArchive archive) {
-	// TransactionContext transactionContext = new TransactionContext();
-	// transactionContext.setXid((TransactionXid) archive.getXid());
-	// transactionContext.setRecoveried(true);
-	// transactionContext.setCoordinator(archive.isCoordinator());
-	// transactionContext.setCompensable(archive.isCompensable());
-	//
-	// CompensableTransaction transaction = null;
-	// if (archive.isCompensable()) {
-	// TccTransactionImpl tccTransaction = new TccTransactionImpl(transactionContext);
-	// List<CompensableArchive> compensables = archive.getCompensableResourceList();
-	// for (int i = 0; i < compensables.size(); i++) {
-	// CompensableArchive compensable = compensables.get(i);
-	// if (compensable.isCoordinator()) {
-	// tccTransaction.getCoordinatorResourceArchiveList().add(compensable);
-	// } else {
-	// tccTransaction.getParticipantResourceArchiveList().add(compensable);
-	// }
-	// }
-	// List<XAResourceArchive> resources = archive.getRemoteResources();
-	// for (int i = 0; i < resources.size(); i++) {
-	// XAResourceArchive resource = resources.get(i);
-	// Xid xid = resource.getXid();
-	// tccTransaction.getResourceArchives().put(xid, resource);
-	// }
-	// tccTransaction.setTransactionStatus(archive.getStatus());
-	// tccTransaction.setCompensableStatus(archive.getCompensableStatus());
-	// transaction = tccTransaction;
-	// } else {
-	// transaction = new JtaTransactionImpl(transactionContext);
-	// }
-	//
-	// if (archive.getVote() == XAResource.XA_RDONLY) {
-	// throw new IllegalStateException();
-	// }
-	//
-	// return transaction;
-	// }
-	//
-	// /**
-	// * commit/rollback the uncompleted transactions.
-	// */
-	// public synchronized void startRecovery() {
-	// TransactionRepository transactionRepository = this.beanFactory.getTransactionRepository();
-	// CompensableLogger transactionLogger = this.beanFactory.getCompensableLogger();
-	// List<TransactionArchive> archives = transactionLogger.getTransactionArchiveList();
-	// for (int i = 0; i < archives.size(); i++) {
-	// CompensableTransaction transaction = null;
-	// try {
-	// TransactionArchive archive = (TransactionArchive) archives.get(i);
-	// transaction = this.reconstructTransaction(archive);
-	// } catch (RuntimeException rex) {
-	// continue;
-	// }
-	// TransactionContext transactionContext = transaction.getTransactionContext();
-	// TransactionXid globalXid = transactionContext.getXid();
-	// if (TccTransactionImpl.class.isInstance(transaction)) {
-	// this.reconstructTccTransaction((TccTransactionImpl) transaction);
-	// } else {
-	// this.reconstructJtaTransaction((JtaTransactionImpl) transaction);
-	// }
-	// if (transactionRepository.getTransaction(globalXid) == null) {
-	// transactionRepository.putTransaction(globalXid, transaction);
-	// transactionRepository.putErrorTransaction(globalXid, transaction);
-	// }
-	// }
-	//
-	// }
-	//
-	// /**
-	// * TODO
-	// */
-	// private void reconstructJtaTransaction(JtaTransactionImpl transaction) {
-	// // org.bytesoft.bytejta.common.TransactionConfigurator jtaConfigurator =
-	// // org.bytesoft.bytejta.common.TransactionConfigurator
-	// // .getInstance();
-	// // org.bytesoft.bytejta.common.TransactionRepository jtaRepository = jtaConfigurator.getTransactionRepository();
-	// // Xid xid = transaction.getTransactionContext().getCurrentXid();
-	// // TransactionXid jtaGlobalXid = jtaConfigurator.getXidFactory().createGlobalXid(xid.getGlobalTransactionId());
-	// // TransactionImpl jtaTransaction = jtaRepository.getErrorTransaction(jtaGlobalXid);
-	// // if (jtaTransaction != null) {
-	// // jtaTransaction.registerTransactionListener(transaction);
-	// // }
-	// }
-	//
-	// /**
-	// * TODO
-	// */
-	// private void reconstructTccTransaction(TccTransactionImpl transaction) {
-	// // org.bytesoft.bytejta.common.TransactionConfigurator jtaConfigurator =
-	// // org.bytesoft.bytejta.common.TransactionConfigurator
-	// // .getInstance();
-	// // org.bytesoft.bytejta.common.TransactionRepository jtaRepository = jtaConfigurator.getTransactionRepository();
-	// // List<CompensableArchive> coordinators = transaction.getCoordinatorArchives();
-	// // for (int i = 0; i < coordinators.size(); i++) {
-	// // CompensableArchive archive = coordinators.get(i);
-	// // Xid xid = archive.getXid();
-	// // TransactionXid jtaGlobalXid = jtaConfigurator.getXidFactory().createGlobalXid(xid.getGlobalTransactionId());
-	// // TransactionImpl jtaTransaction = jtaRepository.getErrorTransaction(jtaGlobalXid);
-	// // if (jtaTransaction != null) {
-	// // jtaTransaction.registerTransactionListener(transaction);
-	// // }
-	// // }
-	// // List<CompensableArchive> participants = transaction.getParticipantArchives();
-	// // for (int i = 0; i < participants.size(); i++) {
-	// // CompensableArchive archive = participants.get(i);
-	// // Xid xid = archive.getXid();
-	// // TransactionXid jtaGlobalXid = jtaConfigurator.getXidFactory().createGlobalXid(xid.getGlobalTransactionId());
-	// // TransactionImpl jtaTransaction = jtaRepository.getErrorTransaction(jtaGlobalXid);
-	// // if (jtaTransaction != null) {
-	// // jtaTransaction.registerTransactionListener(transaction);
-	// // }
-	// // }
-	// }
-	//
-	// public synchronized void timingRecover() {
-	// TransactionRepository transactionRepository = this.beanFactory.getTransactionRepository();
-	// List<Transaction> transactions = transactionRepository.getErrorTransactionList();
-	// for (int i = 0; i < transactions.size(); i++) {
-	// CompensableTransaction transaction = (CompensableTransaction) transactions.get(i);
-	// if (transaction.getTransactionContext().isCoordinator()) {
-	// // if (CompensableTccTransaction.class.isInstance(transaction)) {
-	// this.recoverCoordinatorTransaction((TccTransactionImpl) transaction);
-	// // } else {
-	// // this.recoverTransaction((CompensableJtaTransaction) transaction);
-	// // }
-	// } else {
-	// // this.recoverParticipantTransaction((CompensableTccTransaction) transaction);
-	// }
-	// }
-	// }
-	//
-	// public void recoverCoordinatorTransaction(TccTransactionImpl transaction) {
-	// CompensableLogger transactionLogger = this.beanFactory.getCompensableLogger();
-	// TransactionManager transactionManager = (TransactionManager) this.beanFactory.getCompensableManager();
-	// TransactionRepository transactionRepository = this.beanFactory.getTransactionRepository();
-	//
-	// TransactionContext transactionContext = transaction.getTransactionContext();
-	// boolean coordinator = transactionContext.isCoordinator();
-	// boolean coordinatorCancelFlags = false;
-	//
-	// TransactionXid xid = transactionContext.getXid();
-	// int compensableStatus = transaction.getCompensableStatus();
-	// int transactionStatus = transaction.getStatus();
-	// switch (transactionStatus) {
-	// case Status.STATUS_PREPARED:
-	// transaction.setCompensableStatus(TccTransactionImpl.STATUS_TRIED);
-	// transaction.setTransactionStatus(Status.STATUS_COMMITTING);
-	// transaction.setCompensableStatus(TccTransactionImpl.STATUS_CONFIRMING);
-	// case Status.STATUS_COMMITTING:
-	// if (compensableStatus != TccTransactionImpl.STATUS_CONFIRMED) {
-	// // try {
-	// // transactionManager.processNativeConfirm(transaction);
-	// // } catch (RuntimeException ex) {
-	// // logger.warn(ex.getMessage(), ex);
-	// // break;
-	// // }
-	// transaction.setCompensableStatus(TccTransactionImpl.STATUS_CONFIRMED);
-	// transactionLogger.updateTransaction(transaction.getTransactionArchive());
-	// }
-	//
-	// try {
-	// transaction.remoteConfirm();
-	// } catch (Exception ex) {
-	// logger.debug(ex.getMessage(), ex);
-	// break;
-	// }
-	//
-	// transaction.setTransactionStatus(Status.STATUS_COMMITTED);
-	// transactionLogger.deleteTransaction(transaction.getTransactionArchive());
-	// transactionRepository.removeTransaction(xid);
-	// transactionRepository.removeErrorTransaction(xid);
-	//
-	// break;
-	// case Status.STATUS_ACTIVE:
-	// case Status.STATUS_MARKED_ROLLBACK:
-	// transaction.setTransactionStatus(Status.STATUS_ROLLING_BACK);
-	// transaction.setCompensableStatus(TccTransactionImpl.STATUS_TRY_FAILURE);
-	// transactionLogger.updateTransaction(transaction.getTransactionArchive());
-	// try {
-	// transaction.remoteCancel();
-	// } catch (Exception ex) {
-	// logger.debug(ex.getMessage(), ex);
-	// break;
-	// }
-	//
-	// transaction.setTransactionStatus(Status.STATUS_ROLLEDBACK);
-	// transactionLogger.deleteTransaction(transaction.getTransactionArchive());
-	// transactionRepository.removeTransaction(xid);
-	// transactionRepository.removeErrorTransaction(xid);
-	// break;
-	// case Status.STATUS_PREPARING:
-	// transaction.setTransactionStatus(Status.STATUS_ROLLING_BACK);
-	// if (coordinator
-	// && (compensableStatus == TccTransactionImpl.STATUS_TRIED || compensableStatus ==
-	// TccTransactionImpl.STATUS_TRY_MIXED)) {
-	// coordinatorCancelFlags = true;
-	// }
-	// transaction.setTransactionStatus(Status.STATUS_ROLLING_BACK);
-	// transactionLogger.updateTransaction(transaction.getTransactionArchive());
-	// case Status.STATUS_ROLLING_BACK:
-	// if (compensableStatus != TccTransactionImpl.STATUS_CANCELLED
-	// && compensableStatus != TccTransactionImpl.STATUS_CANCEL_FAILURE) {
-	// try {
-	// // if (coordinatorCancelFlags) {
-	// // transactionManager.processNativeCancel(transaction, true);
-	// // } else {
-	// // transactionManager.processNativeCancel(transaction);
-	// // }
-	// } catch (RuntimeException ex) {
-	// logger.warn(ex.getMessage(), ex);
-	// break;
-	// }
-	// transaction.setCompensableStatus(TccTransactionImpl.STATUS_CANCELLED);
-	// transactionLogger.updateTransaction(transaction.getTransactionArchive());
-	// }
-	//
-	// try {
-	// transaction.remoteCancel();
-	// } catch (Exception ex) {
-	// logger.debug(ex.getMessage(), ex);
-	// break;
-	// }
-	//
-	// transaction.setTransactionStatus(Status.STATUS_ROLLEDBACK);
-	// transactionLogger.deleteTransaction(transaction.getTransactionArchive());
-	// transactionRepository.removeTransaction(xid);
-	// transactionRepository.removeErrorTransaction(xid);
-	//
-	// break;
-	// case Status.STATUS_COMMITTED:
-	// transactionLogger.deleteTransaction(transaction.getTransactionArchive());
-	// break;
-	// case Status.STATUS_ROLLEDBACK:
-	// transactionLogger.deleteTransaction(transaction.getTransactionArchive());
-	// break;
-	// }
-	// }
+	public synchronized void recoverCoordinator(Transaction transaction)
+			throws CommitRequiredException, RollbackRequiredException, SystemException {
+
+		switch (transaction.getTransactionStatus()) {
+		case Status.STATUS_ACTIVE:
+		case Status.STATUS_MARKED_ROLLBACK:
+		case Status.STATUS_PREPARING:
+		case Status.STATUS_ROLLING_BACK:
+		case Status.STATUS_UNKNOWN:
+			transaction.recoveryRollback();
+			transaction.recoveryForget();
+			break;
+		case Status.STATUS_PREPARED:
+		case Status.STATUS_COMMITTING:
+			transaction.recoveryCommit();
+			transaction.recoveryForget();
+			break;
+		case Status.STATUS_COMMITTED:
+		case Status.STATUS_ROLLEDBACK:
+		default:
+			// ignore
+		}
+
+	}
 
 	public void setBeanFactory(CompensableBeanFactory tbf) {
 		this.beanFactory = tbf;
+	}
+
+	private static class TransactionBranchKey {
+		public Xid xid;
+		public String resource;
+
+		public int hashCode() {
+			int hash = 3;
+			hash += 7 * (this.xid == null ? 0 : this.xid.hashCode());
+			hash += 11 * (this.resource == null ? 0 : this.resource.hashCode());
+			return hash;
+		}
+
+		public boolean equals(Object obj) {
+			if (obj == null) {
+				return false;
+			} else if (TransactionBranchKey.class.isInstance(obj) == false) {
+				return false;
+			}
+			TransactionBranchKey that = (TransactionBranchKey) obj;
+			boolean xidEquals = CommonUtils.equals(this.xid, that.xid);
+			boolean resEquals = StringUtils.equals(this.resource, that.resource);
+			return xidEquals && resEquals;
+		}
 	}
 
 }

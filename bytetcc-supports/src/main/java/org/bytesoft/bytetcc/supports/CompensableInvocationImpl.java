@@ -15,22 +15,40 @@
  */
 package org.bytesoft.bytetcc.supports;
 
+import java.io.ObjectStreamException;
 import java.lang.reflect.Method;
 
 import org.bytesoft.compensable.CompensableInvocation;
 
 public class CompensableInvocationImpl implements CompensableInvocation {
-	private static final long serialVersionUID = 1L;
 
 	private Method method;
 	private Object[] args;
 	private String confirmableKey;
 	private String cancellableKey;
-	private boolean available = true;
 	private Object identifier;
 
-	public void markUnavailable() {
-		this.available = false;
+	protected Object writeReplace() throws ObjectStreamException {
+		CompensableInvocationInfo that = new CompensableInvocationInfo();
+
+		that.setArgs(this.args);
+		that.setConfirmableKey(this.confirmableKey);
+		that.setCancellableKey(this.cancellableKey);
+		that.setIdentifier(this.identifier);
+
+		that.setDeclaringClass(this.method.getDeclaringClass().getName());
+		that.setMethodName(this.method.getName());
+
+		Class<?>[] parameterTypes = this.method.getParameterTypes();
+		String[] parameterTypeArray = new String[parameterTypes.length];
+		for (int i = 0; i < parameterTypes.length; i++) {
+			Class<?> parameterType = parameterTypes[i];
+			parameterTypeArray[i] = parameterType.getName();
+		}
+
+		that.setParameterTypeArray(parameterTypeArray);
+
+		return that;
 	}
 
 	public Method getMethod() {
@@ -63,14 +81,6 @@ public class CompensableInvocationImpl implements CompensableInvocation {
 
 	public void setCancellableKey(String cancellableKey) {
 		this.cancellableKey = cancellableKey;
-	}
-
-	public boolean isAvailable() {
-		return available;
-	}
-
-	public void setAvailable(boolean available) {
-		this.available = available;
 	}
 
 	public Object getIdentifier() {

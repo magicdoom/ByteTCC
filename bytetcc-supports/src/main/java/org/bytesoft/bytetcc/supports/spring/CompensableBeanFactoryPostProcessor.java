@@ -30,6 +30,8 @@ import org.springframework.beans.factory.config.RuntimeBeanReference;
 
 public class CompensableBeanFactoryPostProcessor implements BeanFactoryPostProcessor {
 
+	private CompensableBeanFactory beanFactory;
+
 	public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) throws BeansException {
 		ClassLoader cl = Thread.currentThread().getContextClassLoader();
 
@@ -70,4 +72,13 @@ public class CompensableBeanFactoryPostProcessor implements BeanFactoryPostProce
 		}
 
 	}
+
+	public CompensableBeanFactory getBeanFactory() {
+		return beanFactory;
+	}
+
+	public void setBeanFactory(CompensableBeanFactory beanFactory) {
+		this.beanFactory = beanFactory;
+	}
+
 }

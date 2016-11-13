@@ -17,6 +17,7 @@ package org.bytesoft.compensable;
 
 import javax.transaction.HeuristicMixedException;
 import javax.transaction.HeuristicRollbackException;
+import javax.transaction.NotSupportedException;
 import javax.transaction.RollbackException;
 import javax.transaction.SystemException;
 
@@ -25,6 +26,8 @@ import org.bytesoft.transaction.TransactionManager;
 public interface CompensableManager extends TransactionManager {
 
 	public CompensableTransaction getCompensableTransactionQuietly();
+
+	public void compensableBegin() throws NotSupportedException, SystemException;
 
 	public void compensableCommit() throws RollbackException, HeuristicMixedException, HeuristicRollbackException,
 			SecurityException, IllegalStateException, SystemException;

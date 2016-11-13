@@ -17,21 +17,41 @@ package org.bytesoft.compensable.archive;
 
 import javax.transaction.xa.Xid;
 
+import org.bytesoft.common.utils.ByteUtils;
 import org.bytesoft.common.utils.CommonUtils;
 import org.bytesoft.compensable.CompensableInvocation;
 
 public class CompensableArchive {
 
-	private Xid xid;
+	private Xid identifier;
+	private boolean coordinator;
+
 	private CompensableInvocation compensable;
+
+	/* try-phase. */
+	private String transactionResourceKey;
+	private Xid transactionXid;
+	private boolean tried;
+
+	/* confirm/cancel phase. */
+	private String compensableResourceKey;
+	private Xid compensableXid;
 	private boolean confirmed;
 	private boolean cancelled;
-	private boolean txMixed;
-	private boolean coordinator;
+
+	public String toString() {
+		String key = (this.identifier == null || this.identifier.getGlobalTransactionId() == null) ? null
+				: ByteUtils.byteArrayToString(this.identifier.getGlobalTransactionId());
+		return String.format(
+				"[compensable-archive| identifier= %s, transactionKey= %s, transactionXid= %s, compensableKey= %s, compensableXid= %s, confirmed= %s, cancelled= %s]",
+				key, this.transactionResourceKey, this.transactionXid, this.compensableResourceKey, this.compensableXid,
+				this.confirmed, this.cancelled);
+	}
 
 	public int hashCode() {
 		int hash = 23;
-		hash += 29 * (this.xid == null ? 0 : this.xid.hashCode());
+		hash += 29 * (this.transactionXid == null ? 0 : this.transactionXid.hashCode());
+		hash += 31 * (this.compensableXid == null ? 0 : this.compensableXid.hashCode());
 		return hash;
 	}
 
@@ -42,15 +62,33 @@ public class CompensableArchive {
 			return false;
 		}
 		CompensableArchive that = (CompensableArchive) obj;
-		return CommonUtils.equals(this.xid, that.xid);
+		boolean transactionXidEquals = CommonUtils.equals(this.transactionXid, that.transactionXid);
+		boolean compensableXidEquals = CommonUtils.equals(this.compensableXid, that.compensableXid);
+		return transactionXidEquals && compensableXidEquals;
 	}
 
-	public Xid getXid() {
-		return xid;
+	public Xid getIdentifier() {
+		return identifier;
 	}
 
-	public void setXid(Xid xid) {
-		this.xid = xid;
+	public void setIdentifier(Xid identifier) {
+		this.identifier = identifier;
+	}
+
+	public Xid getTransactionXid() {
+		return transactionXid;
+	}
+
+	public void setTransactionXid(Xid transactionXid) {
+		this.transactionXid = transactionXid;
+	}
+
+	public Xid getCompensableXid() {
+		return compensableXid;
+	}
+
+	public void setCompensableXid(Xid compensableXid) {
+		this.compensableXid = compensableXid;
 	}
 
 	public CompensableInvocation getCompensable() {
@@ -59,6 +97,14 @@ public class CompensableArchive {
 
 	public void setCompensable(CompensableInvocation compensable) {
 		this.compensable = compensable;
+	}
+
+	public boolean isTried() {
+		return tried;
+	}
+
+	public void setTried(boolean tried) {
+		this.tried = tried;
 	}
 
 	public boolean isConfirmed() {
@@ -85,12 +131,20 @@ public class CompensableArchive {
 		this.coordinator = coordinator;
 	}
 
-	public boolean isTxMixed() {
-		return txMixed;
+	public String getTransactionResourceKey() {
+		return transactionResourceKey;
 	}
 
-	public void setTxMixed(boolean txMixed) {
-		this.txMixed = txMixed;
+	public void setTransactionResourceKey(String transactionResourceKey) {
+		this.transactionResourceKey = transactionResourceKey;
+	}
+
+	public String getCompensableResourceKey() {
+		return compensableResourceKey;
+	}
+
+	public void setCompensableResourceKey(String compensableResourceKey) {
+		this.compensableResourceKey = compensableResourceKey;
 	}
 
 }

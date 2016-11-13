@@ -13,22 +13,22 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.bytetcc.supports.dubbo;
+package org.bytesoft.bytetcc.supports.dubbo.spi;
 
 import java.util.List;
 import java.util.Random;
 
+import org.apache.commons.lang3.StringUtils;
 import org.bytesoft.bytejta.supports.invoke.InvocationContext;
 import org.bytesoft.bytejta.supports.invoke.InvocationContextRegistry;
 
-import com.alibaba.druid.util.StringUtils;
 import com.alibaba.dubbo.common.URL;
 import com.alibaba.dubbo.rpc.Invocation;
 import com.alibaba.dubbo.rpc.Invoker;
 import com.alibaba.dubbo.rpc.RpcException;
 import com.alibaba.dubbo.rpc.cluster.LoadBalance;
 
-public final class CompensableDubboLoadBalance implements LoadBalance {
+public final class CompensableLoadBalance implements LoadBalance {
 	static final Random random = new Random();
 
 	public <T> Invoker<T> select(List<Invoker<T>> invokers, URL url, Invocation invocation) throws RpcException {

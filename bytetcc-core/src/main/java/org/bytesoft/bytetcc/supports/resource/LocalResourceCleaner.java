@@ -13,29 +13,12 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this distribution; if not, see <http://www.gnu.org/licenses/>.
  */
-package org.bytesoft.compensable.logger;
+package org.bytesoft.bytetcc.supports.resource;
 
-import java.util.List;
+import javax.transaction.xa.Xid;
 
-import org.bytesoft.compensable.archive.CompensableArchive;
-import org.bytesoft.compensable.archive.TransactionArchive;
-import org.bytesoft.transaction.archive.XAResourceArchive;
+public interface LocalResourceCleaner {
 
-public interface CompensableLogger {
-
-	/* transaction */
-	public void createTransaction(TransactionArchive archive);
-
-	public void updateTransaction(TransactionArchive archive);
-
-	public void deleteTransaction(TransactionArchive archive);
-
-	public List<TransactionArchive> getTransactionArchiveList();
-
-	/* coordinator */
-	public void updateCoordinator(XAResourceArchive archive);
-
-	/* compensable */
-	public void updateCompensable(CompensableArchive archive);
+	public void forget(Xid xid, String resourceId) throws RuntimeException;
 
 }
